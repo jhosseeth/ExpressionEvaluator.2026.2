@@ -1,111 +1,285 @@
-﻿using System.Diagnostics.CodeAnalysis;
-using System.Reflection.Metadata;
+﻿using System.Globalization;
 
 namespace Backend;
 
 public static class ExpressionEvaluator
 {
-    public static double Evalute(string infix) => EvalutePostfix(ToPostfix(infix));
-
-    private static string ToPostfix(string infix)
+    private enum TokenType
     {
-        var posfix = string.Empty;
-        var stack = new Stack<char>();
-        foreach (var item in infix)
+        Number,
+        Operator,
+        LeftParenthesis,
+        RightParenthesis,
+    }
+
+    private readonly record struct Token(TokenType Type, string Text, double Value = 0);
+
+    public static double Evaluate(string infix)
+    {
+        ArgumentNullException.ThrowIfNull(infix);
+
+        var tokens = Tokenize(infix);
+        var postfix = ToPostfix(tokens);
+        return EvaluatePostfix(postfix);
+    }
+
+    // Kept for compatibility with the original project API.
+    public static double Evalute(string infix) => Evaluate(infix);
+
+    private static List<Token> Tokenize(string infix)
+    {
+        var tokens = new List<Token>();
+
+        for (var index = 0; index < infix.Length;)
         {
-            if (IsOperator(item))
+            var current = infix[index];
+            if (char.IsWhiteSpace(current))
             {
-                if (item == ')')
+                index++;
+                continue;
+            }
+
+            if (IsAsciiDigit(current) || current == '.')
+            {
+                var start = index;
+                var hasDecimalPoint = false;
+                var hasDigit = false;
+
+                while (index < infix.Length && (IsAsciiDigit(infix[index]) || infix[index] == '.'))
                 {
-                    var ope = stack.Pop();
-                    while(ope != '(')
+                    if (infix[index] == '.')
                     {
-                        posfix += ope;
-                        ope = stack.Pop();
-                    }
-                }
-                else
-                {
-                    if (stack.Count == 0)
-                    {
-                        stack.Push(item);
+                        if (hasDecimalPoint)
+                        {
+                            throw new FormatException("Un número no puede tener más de un punto decimal.");
+                        }
+
+                        hasDecimalPoint = true;
                     }
                     else
                     {
-                        if (PriorityInfix(item) > PriorityStack(stack.Peek()))
-                        {
-                            stack.Push(item);
-                        }
-                        else
-                        {
-                            posfix += stack.Pop();
-                            stack.Push(item);
-                        }
+                        hasDigit = true;
                     }
+
+                    index++;
                 }
+
+                var text = infix[start..index];
+                if (!hasDigit || !double.TryParse(text, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var value) || !double.IsFinite(value))
+                {
+                    throw new FormatException($"El número '{text}' no es válido o está fuera del rango permitido.");
+                }
+
+                tokens.Add(new Token(TokenType.Number, text, value));
+                continue;
+            }
+
+            if (current is '+' or '-' or '*' or '/' or '^')
+            {
+                tokens.Add(new Token(TokenType.Operator, current.ToString()));
+            }
+            else if (current == '(')
+            {
+                tokens.Add(new Token(TokenType.LeftParenthesis, current.ToString()));
+            }
+            else if (current == ')')
+            {
+                tokens.Add(new Token(TokenType.RightParenthesis, current.ToString()));
             }
             else
             {
-                posfix += item;
+                throw new FormatException($"El carácter '{current}' no es válido en la expresión.");
             }
+
+            index++;
         }
-        do
+
+        if (tokens.Count == 0)
         {
-            posfix += stack.Pop();
-        } while (stack.Count != 0);
-        return posfix;
+            throw new FormatException("La expresión está vacía.");
+        }
+
+        return tokens;
     }
 
-    private static int PriorityStack(char op) => op switch
+    private static List<Token> ToPostfix(List<Token> infix)
     {
-        '^' => 3,
-        '*' => 2,
-        '/' => 2,
-        '+' => 1,
-        '-' => 1,
-        '(' => 0,
-        _ => throw new Exception("Invalid expression."),
-    };
+        var postfix = new List<Token>();
+        var operators = new Stack<Token>();
+        var expectingOperand = true;
 
-    private static int PriorityInfix(char op) => op switch
-    {
-        '^' => 4,
-        '*' => 2,
-        '/' => 2,
-        '+' => 1,
-        '-' => 1,
-        '(' => 5,
-        _ => throw new Exception("Invalid expression."),
-    };
-
-    private static bool IsOperator(char item) => item == '^' || item == '*' || item == '/' || item == '+' || item == '-' || item == '(' || item == ')';
-
-    private static double EvalutePostfix(string postfix)
-    {
-        var stack = new Stack<double>();
-        foreach (var item in postfix)
+        foreach (var token in infix)
         {
-            if (IsOperator(item))
+            switch (token.Type)
             {
-                var ope2 = stack.Pop();
-                var ope1 = stack.Pop();
-                stack.Push(Calculate(ope1, ope2, item));
-            }
-            else
-            {
-                stack.Push(char.GetNumericValue(item));
+                case TokenType.Number:
+                    if (!expectingOperand)
+                    {
+                        throw new FormatException("Falta un operador entre dos números.");
+                    }
+
+                    postfix.Add(token);
+                    expectingOperand = false;
+                    break;
+
+                case TokenType.LeftParenthesis:
+                    if (!expectingOperand)
+                    {
+                        throw new FormatException("Falta un operador antes del paréntesis de apertura.");
+                    }
+
+                    operators.Push(token);
+                    expectingOperand = true;
+                    break;
+
+                case TokenType.RightParenthesis:
+                    if (expectingOperand)
+                    {
+                        throw new FormatException("Falta un número antes del paréntesis de cierre.");
+                    }
+
+                    while (operators.Count > 0 && operators.Peek().Type != TokenType.LeftParenthesis)
+                    {
+                        postfix.Add(operators.Pop());
+                    }
+
+                    if (operators.Count == 0)
+                    {
+                        throw new FormatException("Hay un paréntesis de cierre sin su paréntesis de apertura.");
+                    }
+
+                    operators.Pop();
+                    expectingOperand = false;
+                    break;
+
+                case TokenType.Operator:
+                    var isUnaryMinus = token.Text == "-" && expectingOperand;
+                    if (expectingOperand && !isUnaryMinus)
+                    {
+                        throw new FormatException($"El operador '{token.Text}' no tiene un operando a su izquierda.");
+                    }
+
+                    if (isUnaryMinus)
+                    {
+                        // Unary minus binds less tightly than exponentiation.
+                        operators.Push(new Token(TokenType.Operator, "u-"));
+                        break;
+                    }
+
+                    while (operators.Count > 0 && operators.Peek().Type == TokenType.Operator && ShouldPop(operators.Peek(), token))
+                    {
+                        postfix.Add(operators.Pop());
+                    }
+
+                    operators.Push(token);
+                    expectingOperand = true;
+                    break;
             }
         }
-        return stack.Pop();
+
+        if (expectingOperand)
+        {
+            throw new FormatException("La expresión termina donde se esperaba un número.");
+        }
+
+        while (operators.Count > 0)
+        {
+            var op = operators.Pop();
+            if (op.Type == TokenType.LeftParenthesis)
+            {
+                throw new FormatException("Hay un paréntesis de apertura sin su paréntesis de cierre.");
+            }
+
+            postfix.Add(op);
+        }
+
+        return postfix;
     }
 
-    private static double Calculate(double ope1, double ope2, char item) => item switch
+    private static bool ShouldPop(Token stackedOperator, Token incomingOperator)
     {
-        '*' => ope1 * ope2,
-        '/' => ope1 / ope2,
-        '+' => ope1 + ope2,
-        '-' => ope1 - ope2,
-        '^' => Math.Pow(ope1, ope2),
-        _ => throw new Exception("Invalid expression."),
+        var stackedPrecedence = Precedence(stackedOperator.Text);
+        var incomingPrecedence = Precedence(incomingOperator.Text);
+        var incomingIsRightAssociative = incomingOperator.Text == "^";
+
+        return stackedPrecedence > incomingPrecedence ||
+               (stackedPrecedence == incomingPrecedence && !incomingIsRightAssociative);
+    }
+
+    private static int Precedence(string op) => op switch
+    {
+        "+" or "-" => 1,
+        "*" or "/" => 2,
+        "u-" => 3,
+        "^" => 4,
+        _ => throw new InvalidOperationException($"Operador interno no reconocido: {op}"),
     };
+
+    private static double EvaluatePostfix(List<Token> postfix)
+    {
+        var values = new Stack<double>();
+
+        foreach (var token in postfix)
+        {
+            if (token.Type == TokenType.Number)
+            {
+                values.Push(token.Value);
+                continue;
+            }
+
+            if (token.Text == "u-")
+            {
+                if (values.Count < 1)
+                {
+                    throw new FormatException("El signo negativo no tiene un operando.");
+                }
+
+                values.Push(-values.Pop());
+                continue;
+            }
+
+            if (values.Count < 2)
+            {
+                throw new FormatException($"El operador '{token.Text}' no tiene suficientes operandos.");
+            }
+
+            var right = values.Pop();
+            var left = values.Pop();
+            values.Push(Calculate(left, right, token.Text));
+        }
+
+        if (values.Count != 1)
+        {
+            throw new FormatException("La expresión no forma una operación válida.");
+        }
+
+        return values.Pop();
+    }
+
+    private static double Calculate(double left, double right, string op)
+    {
+        if (op == "/" && right == 0)
+        {
+            throw new DivideByZeroException("No se puede dividir por cero.");
+        }
+
+        var result = op switch
+        {
+            "*" => left * right,
+            "/" => left / right,
+            "+" => left + right,
+            "-" => left - right,
+            "^" => Math.Pow(left, right),
+            _ => throw new InvalidOperationException($"Operador interno no reconocido: {op}"),
+        };
+
+        if (!double.IsFinite(result))
+        {
+            throw new ArithmeticException("El resultado no es un número real finito.");
+        }
+
+        return result;
+    }
+
+    private static bool IsAsciiDigit(char value) => value is >= '0' and <= '9';
 }
