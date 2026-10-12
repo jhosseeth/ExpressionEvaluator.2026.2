@@ -1,5 +1,6 @@
 <Solution>
   <Project Path="Backend/Backend.csproj" />
   <Project Path="Frontend.Console/Frontend.Console.csproj" />
+  <Project Path="Frontend.Mac/Frontend.Mac.csproj" />
   <Project Path="Frontend.Windows/Frontend.Windows.csproj" />
 </Solution>
